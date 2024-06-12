@@ -25,8 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
@@ -49,36 +49,18 @@ type reconciler struct {
 
 // NewReconciler creates a new reconcile.Reconciler that reconciles
 // OperatingSystemConfig resources of Gardener's `extensions.gardener.cloud` API group.
-func NewReconciler(actuator Actuator) reconcile.Reconciler {
+func NewReconciler(mgr manager.Manager, actuator Actuator) reconcile.Reconciler {
 	return reconcilerutils.OperationAnnotationWrapper(
+		mgr,
 		func() client.Object { return &extensionsv1alpha1.OperatingSystemConfig{} },
 		&reconciler{
 			actuator:      actuator,
-			statusUpdater: extensionscontroller.NewStatusUpdater(),
+			client:        mgr.GetClient(),
+			reader:        mgr.GetAPIReader(),
+			scheme:        mgr.GetScheme(),
+			statusUpdater: extensionscontroller.NewStatusUpdater(mgr.GetClient()),
 		},
 	)
-}
-
-// InjectFunc enables dependency injection into the actuator.
-func (r *reconciler) InjectFunc(f inject.Func) error {
-	return f(r.actuator)
-}
-
-// InjectClient injects the controller runtime client into the reconciler.
-func (r *reconciler) InjectClient(client client.Client) error {
-	r.client = client
-	r.statusUpdater.InjectClient(client)
-	return nil
-}
-
-func (r *reconciler) InjectAPIReader(reader client.Reader) error {
-	r.reader = reader
-	return nil
-}
-
-func (r *reconciler) InjectScheme(scheme *runtime.Scheme) error {
-	r.scheme = scheme
-	return nil
 }
 
 // Reconcile is the reconciler function that gets executed in case there are new events for the `OperatingSystemConfig`
@@ -142,7 +124,7 @@ func (r *reconciler) reconcile(
 	}
 
 	log.Info("Starting the reconciliation of OperatingSystemConfig")
-	userData, command, units, err := r.actuator.Reconcile(ctx, log, osc)
+	userData, command, units, files, err := r.actuator.Reconcile(ctx, log, osc)
 	if err != nil {
 		_ = r.statusUpdater.Error(ctx, log, osc, reconcilerutils.ReconcileErrCauseOrErr(err), operationType, "Error reconciling OperatingSystemConfig")
 		return reconcilerutils.ReconcileErr(err)
@@ -155,7 +137,7 @@ func (r *reconciler) reconcile(
 	}
 
 	patch := client.MergeFrom(osc.DeepCopy())
-	setOSCStatus(osc, secret, command, units)
+	setOSCStatus(osc, secret, command, units, files)
 	if err := r.client.Status().Patch(ctx, osc, patch); err != nil {
 		_ = r.statusUpdater.Error(ctx, log, osc, reconcilerutils.ReconcileErrCauseOrErr(err), gardencorev1beta1.LastOperationTypeRestore, "Could not update units and secret ref.")
 		return reconcilerutils.ReconcileErr(err)
@@ -187,7 +169,7 @@ func (r *reconciler) restore(
 	}
 
 	log.Info("Starting the restoration of OperatingSystemConfig")
-	userData, command, units, err := r.actuator.Restore(ctx, log, osc)
+	userData, command, units, files, err := r.actuator.Restore(ctx, log, osc)
 	if err != nil {
 		_ = r.statusUpdater.Error(ctx, log, osc, reconcilerutils.ReconcileErrCauseOrErr(err), gardencorev1beta1.LastOperationTypeRestore, "Error restoring OperatingSystemConfig")
 		return reconcilerutils.ReconcileErr(err)
@@ -200,7 +182,7 @@ func (r *reconciler) restore(
 	}
 
 	patch := client.MergeFrom(osc.DeepCopy())
-	setOSCStatus(osc, secret, command, units)
+	setOSCStatus(osc, secret, command, units, files)
 	if err := r.client.Status().Patch(ctx, osc, patch); err != nil {
 		_ = r.statusUpdater.Error(ctx, log, osc, reconcilerutils.ReconcileErrCauseOrErr(err), gardencorev1beta1.LastOperationTypeRestore, "Could not update units and secret ref.")
 		return reconcilerutils.ReconcileErr(err)
@@ -307,7 +289,7 @@ func (r *reconciler) reconcileOSCResultSecret(ctx context.Context, osc *extensio
 	return secret, nil
 }
 
-func setOSCStatus(osc *extensionsv1alpha1.OperatingSystemConfig, secret *corev1.Secret, command *string, units []string) {
+func setOSCStatus(osc *extensionsv1alpha1.OperatingSystemConfig, secret *corev1.Secret, command *string, units, files []string) {
 	osc.Status.CloudConfig = &extensionsv1alpha1.CloudConfig{
 		SecretRef: corev1.SecretReference{
 			Name:      secret.Name,
@@ -315,6 +297,7 @@ func setOSCStatus(osc *extensionsv1alpha1.OperatingSystemConfig, secret *corev1.
 		},
 	}
 	osc.Status.Units = units
+	osc.Status.Files = files
 	if command != nil {
 		osc.Status.Command = command
 	}

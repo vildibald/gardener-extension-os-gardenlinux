@@ -77,9 +77,6 @@ func CloudConfigFromOperatingSystemConfig(
 // DataForFileContent returns the content for a FileContent, retrieving from a Secret if necessary.
 func DataForFileContent(ctx context.Context, c client.Client, namespace string, content *extensionsv1alpha1.FileContent) ([]byte, error) {
 	if inline := content.Inline; inline != nil {
-		if len(inline.Encoding) == 0 {
-			return []byte(inline.Data), nil
-		}
 		return extensionsv1alpha1helper.Decode(inline.Encoding, []byte(inline.Data))
 	}
 
@@ -98,4 +95,13 @@ func OperatingSystemConfigUnitNames(config *extensionsv1alpha1.OperatingSystemCo
 		unitNames = append(unitNames, unit.Name)
 	}
 	return unitNames
+}
+
+// OperatingSystemConfigFilePaths returns the paths of the files in the OperatingSystemConfig
+func OperatingSystemConfigFilePaths(config *extensionsv1alpha1.OperatingSystemConfig) []string {
+	filePaths := make([]string, 0, len(config.Spec.Files))
+	for _, file := range config.Spec.Files {
+		filePaths = append(filePaths, file.Path)
+	}
+	return filePaths
 }
